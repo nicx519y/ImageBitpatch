@@ -1,0 +1,22 @@
+{
+  "name": "image-processor",
+  "version": "1.0.0",
+  "description": "A Node.js script for batch image processing with scaling, multiple size export, and WebP compression",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "image",
+    "processing",
+    "webp",
+    "resize",
+    "batch"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "sharp": "^0.33.0"
+  }
+}

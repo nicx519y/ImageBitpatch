@@ -1,0 +1,8 @@
+{
+  "inputDir": "./input",
+  "outputDir": "./output",
+  "targetWidth": 720,
+  "scales": [1, 2, 3],
+  "quality": 80,
+  "supportedFormats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif", ".webp"]
+}
