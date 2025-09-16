@@ -1,8 +1,28 @@
 {
-  "inputDir": "./input",
-  "outputDir": "./output",
-  "targetWidth": 720,
-  "scales": [1, 2, 3],
-  "quality": 80,
-  "supportedFormats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif", ".webp"]
+  "configs": [
+    {
+      "name": "image_bg",
+      "inputDir": "./input",
+      "outputDir": "./output/image_bg",
+      "targetWidth": 375,
+      "targetHeight": 812,
+      "cropPosition": "center",
+      "scales": [1, 2],
+      "quality": 80,
+      "maxWorkers": 2,
+      "supportedFormats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif", ".webp"]
+    },
+    {
+      "name": "cover",
+      "inputDir": "./input",
+      "outputDir": "./output/cover",
+      "targetWidth": 70,
+      "targetHeight": 78,
+      "cropPosition": "top",
+      "scales": [1, 2, 3],
+      "quality": 80,
+      "maxWorkers": 2,
+      "supportedFormats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif", ".webp"]
+    }
+  ]
 }
