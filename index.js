@@ -92,46 +92,63 @@ function chunkArray(array, chunkSize) {
   return chunks;
 }
 
-// 获取最优的工作线程数（单线程版本）
+// 获取最优的工作线程数
 function getOptimalWorkerCount(maxWorkers, fileCount) {
   const cpuCount = os.cpus().length;
-  // 单线程处理，避免资源竞争
-  const workerCount = 1;
-  console.log(`🔧 CPU核心数: ${cpuCount}, 使用Worker线程数: ${workerCount} (单线程模式)`);
-  return workerCount;
+  // 根据CPU核心数、配置的最大线程数和文件数量确定最优线程数
+  const optimalCount = Math.min(maxWorkers, cpuCount, fileCount);
+  console.log(`🔧 CPU核心数: ${cpuCount}, 配置最大线程: ${maxWorkers}, 文件数: ${fileCount}, 使用线程数: ${optimalCount}`);
+  return optimalCount;
 }
 
 // Worker线程处理函数
 if (!isMainThread) {
   // 在Worker线程中执行
-  const { files, outputDir, config } = workerData;
+  const { files, outputDir, config, workerId, scaleName } = workerData;
   
   (async () => {
     try {
       const results = [];
+      const workerName = workerId ? `Worker-${workerId}` : 'Worker';
+      const scaleInfo = scaleName ? ` (${scaleName})` : '';
       
-      // 为每个Worker线程创建一个复用的Sharp实例池
+      console.log(`🔄 [${config.name || '未命名配置'}] ${workerName}${scaleInfo} 开始处理 ${files.length} 个图片文件`);
+      
+      // 为每个Worker线程创建独立的Sharp实例池
+      // 每个Worker使用唯一的实例标识，避免实例冲突
       const sharpInstances = new Map();
       
+      // 记录开始时间和内存
+      const startTime = Date.now();
+      const startMemory = getMemoryUsage();
+      
+      // 处理分配给该Worker的图片文件
       for (let i = 0; i < files.length; i++) {
         const inputPath = files[i];
+        const fileName = path.basename(inputPath);
+        
+        console.log(`📷 [${config.name || '未命名配置'}] ${workerName}${scaleInfo} 处理: ${fileName} (${i + 1}/${files.length})`);
+        
         const result = await processImageSingleOptimized(inputPath, outputDir, config, sharpInstances);
         results.push(result);
         
-        // 每个图片处理完后暂停300ms，降低CPU占用
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // 每个图片处理完后暂停20ms，降低CPU占用
+        await new Promise(resolve => setTimeout(resolve, 20));
         
-        // 单实例复用模式下，大幅减少内存检查频率
-        // if ((i + 1) % 50 === 0) {
-        //   const currentMemory = process.memoryUsage();
-        //   const currentMemoryMB = Math.round(currentMemory.heapUsed / 1024 / 1024);
-        //   if (currentMemoryMB > 400) { // 进一步提高阈值，减少GC频率
-        //     forceGarbageCollection(400);
-        //   }
-        // }
+        // 定期内存检查（每5个文件检查一次，分组处理频率可以更高）
+        if ((i + 1) % 5 === 0) {
+          const currentMemory = getMemoryUsage();
+          if (currentMemory.heapUsed > 250) { // 分组Worker内存阈值设置更低
+            console.log(`🧹 [${config.name || '未命名配置'}] ${workerName}${scaleInfo} 内存清理: ${currentMemory.heapUsed}MB`);
+            if (global.gc) {
+              global.gc();
+            }
+          }
+        }
       }
       
       // 清理所有Sharp实例
+      console.log(`🧹 [${config.name || '未命名配置'}] ${workerName}${scaleInfo} 清理Sharp实例: ${sharpInstances.size} 个`);
       for (const [key, instance] of sharpInstances) {
         if (instance && typeof instance.destroy === 'function') {
           instance.destroy();
@@ -144,8 +161,20 @@ if (!isMainThread) {
         global.gc();
       }
       
+      // 统计处理结果
+      const endTime = Date.now();
+      const duration = ((endTime - startTime) / 1000).toFixed(2);
+      const endMemory = getMemoryUsage();
+      const totalGeneratedFiles = results.reduce((sum, result) => sum + result.generatedFiles, 0);
+      
+      console.log(`✅ [${config.name || '未命名配置'}] ${workerName}${scaleInfo} 完成: ${files.length} 图片 → ${totalGeneratedFiles} 文件，耗时 ${duration}s`);
+      console.log(`📊 [${config.name || '未命名配置'}] ${workerName}${scaleInfo} 内存: ${startMemory.heapUsed}MB → ${endMemory.heapUsed}MB`);
+      
       parentPort.postMessage({ success: true, results });
     } catch (error) {
+      const workerName = workerId ? `Worker-${workerId}` : 'Worker';
+      const scaleInfo = scaleName ? ` (${scaleName})` : '';
+      console.error(`❌ [${config.name || '未命名配置'}] ${workerName}${scaleInfo} 处理失败:`, error.message);
       parentPort.postMessage({ success: false, error: error.message });
     }
   })();
@@ -253,10 +282,17 @@ async function processImageSingle(inputPath, outputDir, config) {
   }
 }
 
-// 真正的单实例复用版本：每个Worker线程只使用一个Sharp实例，最大化复用
+// 单倍数处理版本：每个Worker线程只处理一个特定倍数
 async function processImageSingleOptimized(inputPath, outputDir, config, sharpInstances) {
   const { targetWidth, targetHeight, cropPosition, scales, quality } = config;
   const fileName = path.parse(inputPath).name;
+  
+  // 现在每个Worker只处理一个倍数，scales数组应该只有一个元素
+  const scale = scales[0];
+  if (!scale) {
+    console.error(`处理图片失败 ${path.basename(inputPath)}: 未找到倍数配置`);
+    return { file: inputPath, success: false, error: '未找到倍数配置', generatedFiles: 0 };
+  }
   
   try {
     // 读取图片数据到Buffer（一次性读取）
@@ -283,46 +319,50 @@ async function processImageSingleOptimized(inputPath, outputDir, config, sharpIn
       sharpInstances.set('reusable_processor', baseProcessor);
     }
     
-    // 处理每个倍数尺寸 - 复用同一个基础实例
-    for (const scale of scales) {
-      const scaledWidth = targetWidth * scale;
-      const scaledHeight = targetHeight * scale;
-      
-      // 生成输出文件名（目录已预创建）
-      const scaleDir = path.join(outputDir, `x${scale}`);
-      const outputFileName = `${fileName}.webp`;
-      const outputPath = path.join(scaleDir, outputFileName);
-      
-      try {
-        // 使用Buffer和复用实例处理，减少实例创建开销
-        const pipeline = sharp(imageBuffer)
-          .extract(cropArea)
-          .resize(scaledWidth, scaledHeight, { fit: 'fill' })
-          .webp({ quality });
-        
-        await pipeline.toFile(outputPath);
-        pipeline.destroy(); // 清理pipeline
-        
-        console.log(`生成: ${outputPath}`);
-      } catch (scaleError) {
-        console.error(`处理尺寸 ${scale}x 失败:`, scaleError.message);
-      }
-    }
+    // 处理单个倍数尺寸
+    const scaledWidth = targetWidth * scale;
+    const scaledHeight = targetHeight * scale;
     
-    // 每个图片处理完后暂停300ms，降低CPU占用
-    await new Promise(resolve => setTimeout(resolve, 300));
+    // 生成输出文件名（目录已预创建）
+    const scaleDir = path.join(outputDir, `x${scale}`);
+    const outputFileName = `${fileName}.webp`;
+    const outputPath = path.join(scaleDir, outputFileName);
+    
+    try {
+      // 使用Buffer和复用实例处理，减少实例创建开销
+      const pipeline = sharp(imageBuffer)
+        .extract(cropArea)
+        .resize(scaledWidth, scaledHeight, { fit: 'fill' })
+        .webp({ quality });
+      
+      await pipeline.toFile(outputPath);
+      pipeline.destroy(); // 清理pipeline
+      
+      console.log(`生成: ${outputPath}`);
+      
+      // 每个图片处理完后暂停300ms，降低CPU占用
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      return { file: inputPath, success: true, generatedFiles: 1 };
+      
+    } catch (scaleError) {
+      console.error(`处理尺寸 ${scale}x 失败:`, scaleError.message);
+      return { file: inputPath, success: false, error: scaleError.message, generatedFiles: 0 };
+    }
     
   } catch (error) {
     console.error(`处理图片失败 ${path.basename(inputPath)}:`, error.message);
+    return { file: inputPath, success: false, error: error.message, generatedFiles: 0 };
   }
 }
 
 // 批处理队列处理图片文件
 async function processImage(imageFiles, outputDir, config, globalProgress = null) {
-  const { scales } = config;
-  const batchSize = 10; // 每批处理10个文件
+  const { scales, threadsPerScale = 1 } = config;
   const totalFiles = imageFiles.length;
-  const totalBatches = Math.ceil(totalFiles / batchSize);
+  
+  // 计算总输出文件数（每个图片 × 尺寸数）
+  const totalOutputFiles = totalFiles * scales.length;
   
   // 预创建所有需要的输出目录
   for (const scale of scales) {
@@ -331,39 +371,79 @@ async function processImage(imageFiles, outputDir, config, globalProgress = null
   }
   
   const configName = config.name || '未命名配置';
-  console.log(`🚀 [${configName}] 开始批处理 ${totalFiles} 个图片文件，每批 ${batchSize} 个，共 ${totalBatches} 批`);
   
-  let processedFiles = 0;
+  console.log(`🚀 [${configName}] 开始倍数内分组多线程处理 ${totalFiles} 个图片文件`);
+  console.log(`📊 [${configName}] 总输出文件数: ${totalOutputFiles} (${totalFiles} 图片 × ${scales.length} 尺寸)`);
+  console.log(`🔧 [${configName}] 每个倍数使用 ${threadsPerScale} 个Worker线程`);
   
-  // 分批处理文件
-  for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-    const startIndex = batchIndex * batchSize;
-    const endIndex = Math.min(startIndex + batchSize, totalFiles);
-    const batchFiles = imageFiles.slice(startIndex, endIndex);
+  // 为每个倍数创建多个Worker线程（按文件分组）
+  const allWorkerGroups = [];
+  let globalWorkerId = 1;
+  
+  for (const scale of scales) {
+    // 将文件分组给该倍数的多个Worker线程
+    const fileGroups = [];
     
-    // 显示当前配置和全局进度
-    let progressInfo = `📦 [${configName}] 第 ${batchIndex + 1}/${totalBatches} 批 (${batchFiles.length} 个文件)`;
-    if (globalProgress) {
-      const globalPercent = ((globalProgress.processed / globalProgress.total) * 100).toFixed(1);
-      progressInfo += ` - 全局进度: ${globalProgress.processed}/${globalProgress.total} (${globalPercent}%)`;
+    // 初始化分组
+    for (let i = 0; i < threadsPerScale; i++) {
+      fileGroups.push([]);
     }
-    console.log(`\n${progressInfo}`);
     
-    // 检查内存使用情况
-    const memoryBefore = getMemoryUsage();
-    console.log(`💾 [${configName}] 批处理前内存使用: ${memoryBefore.heapUsed}MB`);
+    // 轮询分配文件到各个分组
+    for (let i = 0; i < totalFiles; i++) {
+      const groupIndex = i % threadsPerScale;
+      fileGroups[groupIndex].push(imageFiles[i]);
+    }
     
-    // 使用单个Worker处理当前批次
+    // 为该倍数的每个文件分组创建Worker配置
+    for (let groupIndex = 0; groupIndex < threadsPerScale; groupIndex++) {
+      const files = fileGroups[groupIndex];
+      if (files.length > 0) { // 只创建有文件的分组
+        allWorkerGroups.push({
+          workerId: globalWorkerId++,
+          scale: scale,
+          scaleName: `x${scale}`,
+          groupIndex: groupIndex + 1,
+          files: files,
+          expectedOutputs: files.length
+        });
+      }
+    }
+  }
+  
+  const totalWorkers = allWorkerGroups.length;
+  console.log(`📦 [${configName}] 文件分组完成: ${scales.length} 个倍数 × ${threadsPerScale} 线程 = ${totalWorkers} 个Worker线程`);
+  
+  // 按倍数分组显示线程信息
+  for (const scale of scales) {
+    const scaleWorkers = allWorkerGroups.filter(group => group.scale === scale);
+    console.log(`   倍数 x${scale}: ${scaleWorkers.length} 个线程`);
+    scaleWorkers.forEach((group) => {
+      console.log(`     Worker ${group.workerId} (x${scale}-${group.groupIndex}): ${group.files.length} 个图片 → ${group.expectedOutputs} 个输出文件`);
+    });
+  }
+  
+  // 检查初始内存使用情况
+  const memoryBefore = getMemoryUsage();
+  console.log(`💾 [${configName}] 多线程处理前内存使用: ${memoryBefore.heapUsed}MB`);
+  
+  // 创建所有Worker线程并并行处理
+  const workerPromises = allWorkerGroups.map(async (group) => {
     const worker = new Worker(__filename, {
       workerData: {
-        files: batchFiles,
+        files: group.files,
         outputDir,
-        config
+        config: {
+          ...config,
+          scales: [group.scale] // 每个Worker只处理一个倍数
+        },
+        workerId: group.workerId,
+        scaleName: `${group.scaleName}-${group.groupIndex}`
       }
     });
     
     try {
-      await new Promise((resolve, reject) => {
+      const results = await new Promise((resolve, reject) => {
         worker.on('message', (result) => {
           if (result.success) {
             resolve(result.results);
@@ -375,47 +455,49 @@ async function processImage(imageFiles, outputDir, config, globalProgress = null
         worker.on('error', reject);
         worker.on('exit', (code) => {
           if (code !== 0) {
-            reject(new Error(`Worker线程异常退出，代码: ${code}`));
+            reject(new Error(`Worker线程 ${group.workerId} (${group.scaleName}-${group.groupIndex}) 异常退出，代码: ${code}`));
           }
         });
       });
       
-      processedFiles += batchFiles.length;
-      
-      // 更新全局进度
+      // 更新全局进度（按文件分组计算）
       if (globalProgress) {
-        globalProgress.processed += batchFiles.length;
-      }
-      
-      const configPercent = ((processedFiles / totalFiles) * 100).toFixed(1);
-      let completionInfo = `✅ [${configName}] 第 ${batchIndex + 1} 批完成 - 配置进度: ${processedFiles}/${totalFiles} (${configPercent}%)`;
-      if (globalProgress) {
+        globalProgress.processed += group.files.length;
         const globalPercent = ((globalProgress.processed / globalProgress.total) * 100).toFixed(1);
-        completionInfo += ` - 全局进度: ${globalProgress.processed}/${globalProgress.total} (${globalPercent}%)`;
+        console.log(`✅ [${configName}] Worker ${group.workerId} (${group.scaleName}-${group.groupIndex}) 完成 ${group.files.length} 个图片 - 全局进度: ${globalProgress.processed}/${globalProgress.total} (${globalPercent}%)`);
+      } else {
+        console.log(`✅ [${configName}] Worker ${group.workerId} (${group.scaleName}-${group.groupIndex}) 完成 ${group.files.length} 个图片`);
       }
-      console.log(completionInfo);
+      
+      return { scale: group.scale, groupIndex: group.groupIndex, results };
       
     } finally {
       // 清理Worker线程
       worker.terminate();
     }
-    
-    // 批次间内存检查 - 单实例复用模式下减少GC频率
-    const memoryAfterBatch = getMemoryUsage();
-    if (memoryAfterBatch.heapUsed > 400) {
-      forceGarbageCollection(400);
-    }
-    
-    const memoryAfter = getMemoryUsage();
-    console.log(`💾 [${configName}] 批处理后内存使用: ${memoryAfter.heapUsed}MB`);
-    
-    // 批次间短暂延迟，让系统有时间清理资源
-    if (batchIndex < totalBatches - 1) {
-      await new Promise(resolve => setTimeout(resolve, 200)); // 增加延迟到200ms，给GC更多时间
-    }
-  }
+  });
   
-  console.log(`🎉 [${configName}] 所有批次处理完成！`);
+  // 等待所有Worker线程完成
+  const allResults = await Promise.all(workerPromises);
+  
+  // 统计处理结果
+  const totalProcessedFiles = allResults.reduce((sum, groupResult) => {
+    return sum + groupResult.results.length;
+  }, 0);
+  const totalGeneratedFiles = allResults.reduce((sum, groupResult) => {
+    return sum + groupResult.results.reduce((fileSum, result) => fileSum + result.generatedFiles, 0);
+  }, 0);
+  
+  const memoryAfter = getMemoryUsage();
+  console.log(`💾 [${configName}] 多线程处理后内存使用: ${memoryAfter.heapUsed}MB`);
+  
+  console.log(`🎉 [${configName}] 倍数内分组多线程处理完成！`);
+  console.log(`📊 [${configName}] 处理统计: ${totalWorkers} 个Worker线程处理 ${totalProcessedFiles} 个任务 → ${totalGeneratedFiles} 个输出文件`);
+  
+  // 处理完成后进行内存清理
+  if (memoryAfter.heapUsed > 400) {
+    forceGarbageCollection(400);
+  }
 }
 
 // 主函数
@@ -441,27 +523,42 @@ async function main() {
       }
     }
     
-    // 计算全局进度跟踪
+    // 计算全局进度跟踪（按倍数内线程分组计算）
     let totalGlobalFiles = 0;
+    let totalProcessingUnits = 0;
     const configFilesCounts = [];
     
     // 预先计算所有配置的文件数量
     for (const config of configs) {
       try {
         const imageFiles = getImageFiles(config.inputDir, config.supportedFormats);
+        const threadsPerScale = config.threadsPerScale || 1;
+        
         configFilesCounts.push({ config, fileCount: imageFiles.length, files: imageFiles });
         totalGlobalFiles += imageFiles.length;
+        
+        // 每个线程处理的文件数作为处理单位
+        for (const scale of config.scales) {
+          // 计算每个倍数下各线程的文件分配
+          for (let threadIndex = 0; threadIndex < threadsPerScale; threadIndex++) {
+            const filesForThisThread = Math.ceil(imageFiles.length / threadsPerScale);
+            const actualFiles = Math.min(filesForThisThread, Math.max(0, imageFiles.length - threadIndex * filesForThisThread));
+            if (actualFiles > 0) {
+              totalProcessingUnits += actualFiles;
+            }
+          }
+        }
       } catch (error) {
         console.warn(`⚠️  配置 "${config.name || '未命名配置'}" 输入目录访问失败:`, error.message);
         configFilesCounts.push({ config, fileCount: 0, files: [] });
       }
     }
     
-    console.log(`📊 全局统计: 共 ${configs.length} 个配置，总计 ${totalGlobalFiles} 个图片文件`);
+    console.log(`📊 全局统计: 共 ${configs.length} 个配置，总计 ${totalGlobalFiles} 个图片文件，${totalProcessingUnits} 个处理单位`);
     
     // 全局进度跟踪对象
     const globalProgress = {
-      total: totalGlobalFiles,
+      total: totalProcessingUnits,
       processed: 0
     };
     
