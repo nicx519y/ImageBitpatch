@@ -9,19 +9,17 @@
       "cropPosition": "center",
       "scales": [1, 2],
       "quality": 80,
-      "maxWorkers": 2,
       "supportedFormats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif", ".webp"]
     },
     {
       "name": "cover",
       "inputDir": "./input",
       "outputDir": "./output/cover",
-      "targetWidth": 70,
-      "targetHeight": 78,
+      "targetWidth": 140,
+      "targetHeight": 156,
       "cropPosition": "top",
       "scales": [1, 2, 3],
       "quality": 80,
-      "maxWorkers": 2,
       "supportedFormats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif", ".webp"]
     }
   ]
