@@ -284,7 +284,7 @@ async function processImageSingle(inputPath, outputDir, config) {
 
 // 单倍数处理版本：每个Worker线程只处理一个特定倍数
 async function processImageSingleOptimized(inputPath, outputDir, config, sharpInstances) {
-  const { targetWidth, targetHeight, cropPosition, scales, quality } = config;
+  const { targetWidth, targetHeight, cropPosition, scales, quality, keepOriginalSize = false } = config;
   const fileName = path.parse(inputPath).name;
   
   // 现在每个Worker只处理一个倍数，scales数组应该只有一个元素
@@ -298,30 +298,33 @@ async function processImageSingleOptimized(inputPath, outputDir, config, sharpIn
     // 读取图片数据到Buffer（一次性读取）
     const imageBuffer = fs.readFileSync(inputPath);
     
-    // 获取图片元数据（使用临时实例，避免影响主实例状态）
-    const tempProcessor = sharp(imageBuffer);
-    const metadata = await tempProcessor.metadata();
-    tempProcessor.destroy(); // 立即销毁临时实例
-    
-    // 计算裁剪区域
-    const cropArea = calculateCropArea(
-      metadata.width, 
-      metadata.height, 
-      targetWidth, 
-      targetHeight, 
-      cropPosition
-    );
-    
-    // 获取或创建复用的Sharp实例
-    let baseProcessor = sharpInstances.get('reusable_processor');
-    if (!baseProcessor) {
-      baseProcessor = sharp();
-      sharpInstances.set('reusable_processor', baseProcessor);
+    // 在保留原尺寸模式下跳过裁剪与缩放，仅压缩
+    let pipeline;
+    if (keepOriginalSize) {
+      pipeline = sharp(imageBuffer).webp({ quality });
+    } else {
+      // 获取图片元数据（使用临时实例，避免影响主实例状态）
+      const tempProcessor = sharp(imageBuffer);
+      const metadata = await tempProcessor.metadata();
+      tempProcessor.destroy(); // 立即销毁临时实例
+      
+      // 计算裁剪区域
+      const cropArea = calculateCropArea(
+        metadata.width, 
+        metadata.height, 
+        targetWidth, 
+        targetHeight, 
+        cropPosition
+      );
+      
+      // 处理单个倍数尺寸（按目标尺寸缩放）
+      const scaledWidth = targetWidth * scale;
+      const scaledHeight = targetHeight * scale;
+      pipeline = sharp(imageBuffer)
+        .extract(cropArea)
+        .resize(scaledWidth, scaledHeight, { fit: 'fill' })
+        .webp({ quality });
     }
-    
-    // 处理单个倍数尺寸
-    const scaledWidth = targetWidth * scale;
-    const scaledHeight = targetHeight * scale;
     
     // 生成输出文件名（目录已预创建）
     const scaleDir = path.join(outputDir, `x${scale}`);
@@ -329,16 +332,10 @@ async function processImageSingleOptimized(inputPath, outputDir, config, sharpIn
     const outputPath = path.join(scaleDir, outputFileName);
     
     try {
-      // 使用Buffer和复用实例处理，减少实例创建开销
-      const pipeline = sharp(imageBuffer)
-        .extract(cropArea)
-        .resize(scaledWidth, scaledHeight, { fit: 'fill' })
-        .webp({ quality });
-      
       await pipeline.toFile(outputPath);
       pipeline.destroy(); // 清理pipeline
       
-      console.log(`生成: ${outputPath}`);
+      console.log(`生成: ${outputPath}${keepOriginalSize ? '（保留原尺寸）' : ''}`);
       
       // 每个图片处理完后暂停300ms，降低CPU占用
       await new Promise(resolve => setTimeout(resolve, 300));

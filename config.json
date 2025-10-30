@@ -1,28 +1,17 @@
 {
   "configs": [
     {
-      "name": "image_bg",
+      "name": "png_compress",
       "inputDir": "./input",
-      "outputDir": "./output/image_bg",
-      "targetWidth": 375,
-      "targetHeight": 812,
+      "outputDir": "./output/png_compress",
+      "targetWidth": 800,
+      "targetHeight": 600,
       "cropPosition": "center",
-      "scales": [1, 2],
-      "quality": 80,
+      "scales": [1],
+      "quality": 70,
+      "keepOriginalSize": true,
       "threadsPerScale": 2,
-      "supportedFormats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif", ".webp"]
-    },
-    {
-      "name": "cover",
-      "inputDir": "./input",
-      "outputDir": "./output/cover",
-      "targetWidth": 140,
-      "targetHeight": 156,
-      "cropPosition": "top",
-      "scales": [1, 2, 3],
-      "quality": 80,
-      "threadsPerScale": 2,
-      "supportedFormats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif", ".webp"]
+      "supportedFormats": [".png"]
     }
   ]
 }
